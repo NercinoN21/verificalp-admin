@@ -5,8 +5,6 @@ from bson import ObjectId
 from pymongo.database import Database
 
 
-
-
 def hash_password(password: str) -> bytes:
     """Gera o hash de uma senha."""
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -73,15 +71,16 @@ def delete_user(db: Database, user_id: ObjectId):
     """Deleta um usuário."""
     return db['users'].delete_one({'_id': user_id})
 
-
-
-
 def get_all_enrollments_by_semester(
     db: Database, semester: str
 ) -> List[Dict[str, Any]]:
     if not semester or semester == 'N/A':
         return []
     return list(db['inscricoes'].find({'semester': semester}))
+
+def delete_enrollment(db: Database, enrollment_id: ObjectId):
+    """Deleta uma inscrição com base no seu ObjectId."""
+    return db['inscricoes'].delete_one({'_id': enrollment_id}).deleted_count
 
 
 def get_all_turmas(db: Database) -> List[Dict[str, Any]]:
@@ -119,3 +118,4 @@ def update_configuracoes(db: Database, new_config: Dict[str, Any]):
         .update_one({}, {'$set': new_config}, upsert=True)
         .acknowledged
     )
+

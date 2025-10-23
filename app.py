@@ -11,7 +11,7 @@ from core.crud import (add_turma, bootstrap_initial_user, check_password,
                        find_user_by_username, get_all_enrollments_by_semester,
                        get_all_turmas, get_all_users, get_configuracoes,
                        get_unique_semesters, update_configuracoes,
-                       update_turma, update_user)
+                       update_turma, update_user, delete_enrollment)
 from core.database import get_database, get_db_connection
 from utils.style import display_logo, load_css
 
@@ -213,6 +213,54 @@ def display_enrollment_management(db, config):
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         width='stretch',
     )
+
+    user_role = st.session_state.get('role', 'auxiliar')
+    can_delete = user_role in ['admin-dev', 'admin']
+
+    if can_delete:
+        display_columns = [
+        'Nome',
+        'Matricula',
+        'Curso',
+        'turma_escolhida',
+        'escolha',
+        'nota_classificacao',
+        'data_inscricao',
+        ]
+
+        with st.expander('✏️ Gerenciar e Excluir Inscrições', expanded=False):
+            st.markdown('### Lista Interativa')
+
+            col_widths = [2, 1.5, 1, 1, 0.7 if can_delete else 0.1]
+
+            cols_header = st.columns(col_widths)
+            cols_header[0].markdown('**Nome**')
+            cols_header[1].markdown('**Matrícula**')
+            cols_header[2].markdown('**Turma Escolhida**')
+            cols_header[3].markdown('**Nota**')
+            cols_header[4].markdown('**Ação**')
+
+            filtered_enrollments_list = filtered_df.to_dict('records')
+
+            for enrollment in filtered_enrollments_list:
+                st.markdown('---')
+                cols = st.columns(col_widths)
+
+                enrollment_id = enrollment['_id']
+
+                cols[0].write(enrollment.get('Nome', 'N/A'))
+                cols[1].write(enrollment.get('Matricula', 'N/A'))
+                cols[2].write(enrollment.get('turma_escolhida', 'N/A'))
+                cols[3].write(f"{enrollment.get('nota_classificacao', 0):.2f}")
+
+                if cols[4].button(
+                    '🗑️',
+                    key=f"delete_enrollment_{enrollment_id}",
+                    help=f"Excluir inscrição de {enrollment.get('Nome')}",
+                ):
+                    delete_enrollment(db, enrollment_id)
+                    st.success(f"Inscrição de {enrollment.get('Nome')} excluída com sucesso!")
+                    st.rerun()
 
 
 def display_turma_management(db, config):
