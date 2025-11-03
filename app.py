@@ -1,6 +1,7 @@
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -15,6 +16,12 @@ from core.crud import (add_turma, bootstrap_initial_user, check_password,
 from core.database import get_database, get_db_connection
 from utils.style import display_logo, load_css
 
+try:
+    LOCAL_TZ = ZoneInfo("America/Recife")
+except Exception:
+    st.error("Erro ao carregar fuso horário 'America/Recife'.")
+    from datetime import timedelta
+    LOCAL_TZ = timezone(timedelta(hours=-3))
 
 def is_valid_semester_format(semester: str) -> bool:
     return re.fullmatch(r'\d{4}\.[0-9]', semester) is not None
@@ -181,6 +188,24 @@ def display_enrollment_management(db, config):
     df['nota_classificacao'] = df.get(
         'notas_relevantes', pd.Series(dtype='object')
     ).apply(lambda x: x.get('nota_predita', 0) if isinstance(x, dict) else 0)
+
+    try:
+        if 'data_inscricao' in df.columns and 'data_ultima_atualizacao' in df.columns:
+            colunas_data = ['data_inscricao', 'data_ultima_atualizacao']
+            timezone_alvo = 'America/Recife'
+
+            for col in colunas_data:
+                df[col] = pd.to_datetime(df[col], format='ISO8601')
+                if df[col].dt.tz is None:
+                    df[col] = df[col].dt.tz_localize('UTC').dt.tz_convert(timezone_alvo)
+                else:
+                    df[col] = df[col].dt.tz_convert(timezone_alvo)
+                df[col] = df[col].dt.floor('S')
+
+                df[col] = df[col].dt.strftime('%d/%m/%Y %H:%M:%S')
+    except Exception as e:
+        st.error(f"Erro ao converter datas de inscrição: {e}. Verifique o formato dos dados no banco.")
+
     st.subheader('Pesquisar e Filtrar')
     search_query = st.text_input(
         'Pesquisar por Nome, Matrícula, etc.',
@@ -201,6 +226,7 @@ def display_enrollment_management(db, config):
         'nota_classificacao',
         'data_inscricao',
     ]
+
     st.dataframe(
         filtered_df[display_columns], width='stretch', hide_index=True
     )
@@ -381,26 +407,29 @@ def display_settings_management(db, config):
             value=config.get('activeSemester', ''),
             help='Formato `AAAA.1` ou `AAAA.2`',
         )
-        current_start = (
+        current_start_utc = (
             pd.to_datetime(config.get('enrollmentStartDate')).to_pydatetime()
             if config.get('enrollmentStartDate')
-            else datetime.now()
+            else datetime.now(timezone.utc)
         )
-        current_end = (
+        current_end_utc = (
             pd.to_datetime(config.get('enrollmentEndDate')).to_pydatetime()
             if config.get('enrollmentEndDate')
-            else datetime.now()
+            else datetime.now(timezone.utc)
         )
+        current_start_local = current_start_utc.astimezone(LOCAL_TZ)
+        current_end_local = current_end_utc.astimezone(LOCAL_TZ)
+
         col1, col2 = st.columns(2)
         start_date = col1.date_input(
-            'Data de Início', value=current_start.date()
+            'Data de Início', value=current_start_local.date()
         )
         start_time = col2.time_input(
-            'Hora de Início', value=current_start.time()
+            'Hora de Início', value=current_start_local.time()
         )
         col3, col4 = st.columns(2)
-        end_date = col3.date_input('Data de Término', value=current_end.date())
-        end_time = col4.time_input('Hora de Término', value=current_end.time())
+        end_date = col3.date_input('Data de Término', value=current_end_local.date())
+        end_time = col4.time_input('Hora de Término', value=current_end_local.time())
         st.subheader('Regras de Negócio')
         cutoff_score = st.number_input(
             'Nota de Corte',
@@ -412,16 +441,22 @@ def display_settings_management(db, config):
         )
     if submit_button:
         if is_valid_semester_format(active_semester):
-            final_start_datetime = datetime.combine(start_date, start_time)
-            final_end_datetime = datetime.combine(end_date, end_time)
+            final_start_naive = datetime.combine(start_date, start_time)
+            final_end_naive = datetime.combine(end_date, end_time)
+
+            start_date_utc_iso = pd.to_datetime(final_start_naive) \
+                                     .tz_localize(LOCAL_TZ) \
+                                     .tz_convert(timezone.utc) \
+                                     .isoformat()
+            end_date_utc_iso = pd.to_datetime(final_end_naive) \
+                                   .tz_localize(LOCAL_TZ) \
+                                   .tz_convert(timezone.utc) \
+                                   .isoformat()
+
             new_config = {
                 'activeSemester': active_semester,
-                'enrollmentStartDate': pd.to_datetime(
-                    final_start_datetime, utc=True
-                ).isoformat(),
-                'enrollmentEndDate': pd.to_datetime(
-                    final_end_datetime, utc=True
-                ).isoformat(),
+                'enrollmentStartDate': start_date_utc_iso,
+                'enrollmentEndDate': end_date_utc_iso,
                 'cutoffScore': cutoff_score,
             }
             if update_configuracoes(db, new_config):
