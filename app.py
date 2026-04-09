@@ -200,7 +200,7 @@ def display_enrollment_management(db, config):
                     df[col] = df[col].dt.tz_localize('UTC').dt.tz_convert(timezone_alvo)
                 else:
                     df[col] = df[col].dt.tz_convert(timezone_alvo)
-                df[col] = df[col].dt.floor('S')
+                df[col] = df[col].dt.floor('s')
 
                 df[col] = df[col].dt.strftime('%d/%m/%Y %H:%M:%S')
     except Exception as e:
