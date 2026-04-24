@@ -76,11 +76,48 @@ def get_all_enrollments_by_semester(
 ) -> List[Dict[str, Any]]:
     if not semester or semester == 'N/A':
         return []
-    return list(db['inscricoes'].find({'semester': semester}))
+    return list(db['inscricoes'].find(
+        {'semester': semester, 'is_deleted': False}
+    ))
+
 
 def delete_enrollment(db: Database, enrollment_id: ObjectId):
-    """Deleta uma inscrição com base no seu ObjectId."""
-    return db['inscricoes'].delete_one({'_id': enrollment_id}).deleted_count
+    """Realiza um Soft Delete (marca como excluído)."""
+    return (
+        db['inscricoes']
+        .update_one(
+            {'_id': enrollment_id},
+            {'$set': {'is_deleted': True}}
+        )
+        .modified_count
+    )
+
+
+def get_unique_enrollment_semesters(db: Database) -> List[str]:
+    """Retorna uma lista de todos os semestres que possuem inscrições registradas."""
+    semesters = db['inscricoes'].distinct('semester')
+    valid_semesters = [s for s in semesters if s and s != 'N/A']
+    return sorted(valid_semesters, reverse=True)
+
+
+def get_deleted_enrollments_by_semester(
+    db: Database, semester: str
+) -> List[Dict[str, Any]]:
+    """Retorna apenas as inscrições marcadas como deletadas do semestre."""
+    if not semester or semester == 'N/A':
+        return []
+    return list(db['inscricoes'].find({
+        'semester': semester,
+        'is_deleted': True
+    }))
+
+
+def recover_enrollment(db: Database, enrollment_id: ObjectId):
+    """Restaura uma inscrição deletada."""
+    return db['inscricoes'].update_one(
+        {'_id': enrollment_id},
+        {'$set': {'is_deleted': False}}
+    ).modified_count
 
 
 def get_all_turmas(db: Database) -> List[Dict[str, Any]]:

@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime, time, timezone
 from io import BytesIO
@@ -8,20 +9,23 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 
 from core.crud import (add_turma, bootstrap_initial_user, check_password,
-                       create_user, delete_turma, delete_user,
-                       find_user_by_username, get_all_enrollments_by_semester,
-                       get_all_turmas, get_all_users, get_configuracoes,
-                       get_unique_semesters, update_configuracoes,
-                       update_turma, update_user, delete_enrollment)
+                       create_user, delete_enrollment, delete_turma,
+                       delete_user, find_user_by_username,
+                       get_all_enrollments_by_semester, get_all_turmas,
+                       get_all_users, get_configuracoes, get_unique_semesters,
+                       update_configuracoes, update_turma, update_user,
+                       get_unique_enrollment_semesters,
+                       get_deleted_enrollments_by_semester, recover_enrollment)
 from core.database import get_database, get_db_connection
 from utils.style import display_logo, load_css
 
 try:
-    LOCAL_TZ = ZoneInfo("America/Recife")
+    LOCAL_TZ = ZoneInfo('America/Recife')
 except Exception:
     st.error("Erro ao carregar fuso horário 'America/Recife'.")
     from datetime import timedelta
     LOCAL_TZ = timezone(timedelta(hours=-3))
+
 
 def is_valid_semester_format(semester: str) -> bool:
     return re.fullmatch(r'\d{4}\.[0-9]', semester) is not None
@@ -177,34 +181,79 @@ def display_user_management(db):
 def display_enrollment_management(db, config):
     st.title('🧑‍🎓 Gerenciamento de Inscrições')
     active_semester = config.get('activeSemester', 'N/A')
-    st.markdown(
-        f'Visualizando inscrições para o semestre **{active_semester}**.'
-    )
-    enrollments = get_all_enrollments_by_semester(db, active_semester)
+    available_semesters = get_unique_enrollment_semesters(db)
+
+    if active_semester not in available_semesters:
+        available_semesters.append(active_semester)
+
+    available_semesters = sorted(available_semesters, reverse=True)
+
+    try:
+        default_index = available_semesters.index(active_semester)
+    except ValueError:
+        default_index = 0
+
+    user_role = st.session_state.get('role', 'auxiliar')
+    can_delete = user_role in ['admin-dev', 'admin']
+
+    col_sem, col_status = st.columns([2, 2])
+
+    with col_sem:
+        selected_semester = st.selectbox(
+            'Selecione o Semestre:',
+            available_semesters,
+            index=default_index,
+        )
+
+    status_view = 'Ativas'
+    if can_delete:
+        with col_status:
+            status_view = st.radio(
+                'Exibir:',
+                ['Ativas', 'Excluídas'],
+                horizontal=True,
+            )
+
+    st.markdown(f'Visualizando inscrições **{status_view}** de **{selected_semester}**.')
+
+    if status_view == 'Ativas':
+        enrollments = get_all_enrollments_by_semester(db, selected_semester)
+    else:
+        enrollments = get_deleted_enrollments_by_semester(db, selected_semester)
+
     if not enrollments:
         st.warning('Nenhuma inscrição encontrada.')
         return
+
     df = pd.DataFrame(enrollments)
     df['nota_classificacao'] = df.get(
         'notas_relevantes', pd.Series(dtype='object')
     ).apply(lambda x: x.get('nota_predita', 0) if isinstance(x, dict) else 0)
 
     try:
-        if 'data_inscricao' in df.columns and 'data_ultima_atualizacao' in df.columns:
+        if (
+            'data_inscricao' in df.columns
+            and 'data_ultima_atualizacao' in df.columns
+        ):
             colunas_data = ['data_inscricao', 'data_ultima_atualizacao']
             timezone_alvo = 'America/Recife'
 
             for col in colunas_data:
                 df[col] = pd.to_datetime(df[col], format='ISO8601')
                 if df[col].dt.tz is None:
-                    df[col] = df[col].dt.tz_localize('UTC').dt.tz_convert(timezone_alvo)
+                    df[col] = (
+                        df[col]
+                        .dt.tz_localize('UTC')
+                        .dt.tz_convert(timezone_alvo)
+                    )
                 else:
                     df[col] = df[col].dt.tz_convert(timezone_alvo)
                 df[col] = df[col].dt.floor('s')
-
                 df[col] = df[col].dt.strftime('%d/%m/%Y %H:%M:%S')
     except Exception as e:
-        st.error(f"Erro ao converter datas de inscrição: {e}. Verifique o formato dos dados no banco.")
+        st.error(
+            f'Erro ao converter datas de inscrição: {e}. Verifique o formato dos dados no banco.'
+        )
 
     st.subheader('Pesquisar e Filtrar')
     search_query = st.text_input(
@@ -217,15 +266,19 @@ def display_enrollment_management(db, config):
         filtered_df = df[
             df.apply(lambda row: search_query in str(row).lower(), axis=1)
         ]
+
     display_columns = [
         'Nome',
         'Matricula',
+        'email',
         'Curso',
         'turma_escolhida',
         'escolha',
         'nota_classificacao',
         'data_inscricao',
     ]
+    # Exibir apenas colunas que existem no DataFrame
+    display_columns = [c for c in display_columns if c in filtered_df.columns]
 
     st.dataframe(
         filtered_df[display_columns], width='stretch', hide_index=True
@@ -235,34 +288,25 @@ def display_enrollment_management(db, config):
     st.download_button(
         '📥 Exportar para Excel',
         excel_data,
-        f'inscricoes_{active_semester}.xlsx',
+        f'inscricoes_{selected_semester}.xlsx',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         width='stretch',
     )
 
-    user_role = st.session_state.get('role', 'auxiliar')
-    can_delete = user_role in ['admin-dev', 'admin']
-
     if can_delete:
-        display_columns = [
-        'Nome',
-        'Matricula',
-        'Curso',
-        'turma_escolhida',
-        'escolha',
-        'nota_classificacao',
-        'data_inscricao',
-        ]
-
-        with st.expander('✏️ Gerenciar e Excluir Inscrições', expanded=False):
+        expander_label = (
+            '✏️ Gerenciar Inscrições'
+            if status_view == 'Ativas'
+            else '♻️ Recuperar Inscrições'
+        )
+        with st.expander(expander_label, expanded=True):
             st.markdown('### Lista Interativa')
 
-            col_widths = [2, 1.5, 1, 1, 0.7 if can_delete else 0.1]
-
+            col_widths = [2, 1.5, 1, 1, 0.7]
             cols_header = st.columns(col_widths)
             cols_header[0].markdown('**Nome**')
             cols_header[1].markdown('**Matrícula**')
-            cols_header[2].markdown('**Turma Escolhida**')
+            cols_header[2].markdown('**Turma**')
             cols_header[3].markdown('**Nota**')
             cols_header[4].markdown('**Ação**')
 
@@ -271,7 +315,6 @@ def display_enrollment_management(db, config):
             for enrollment in filtered_enrollments_list:
                 st.markdown('---')
                 cols = st.columns(col_widths)
-
                 enrollment_id = enrollment['_id']
 
                 cols[0].write(enrollment.get('Nome', 'N/A'))
@@ -279,14 +322,24 @@ def display_enrollment_management(db, config):
                 cols[2].write(enrollment.get('turma_escolhida', 'N/A'))
                 cols[3].write(f"{enrollment.get('nota_classificacao', 0):.2f}")
 
-                if cols[4].button(
-                    '🗑️',
-                    key=f"delete_enrollment_{enrollment_id}",
-                    help=f"Excluir inscrição de {enrollment.get('Nome')}",
-                ):
-                    delete_enrollment(db, enrollment_id)
-                    st.success(f"Inscrição de {enrollment.get('Nome')} excluída com sucesso!")
-                    st.rerun()
+                if status_view == 'Ativas':
+                    if cols[4].button(
+                        '🗑️',
+                        key=f'del_{enrollment_id}',
+                        help=f"Mover {enrollment.get('Nome')} para a lixeira",
+                    ):
+                        delete_enrollment(db, enrollment_id)
+                        st.toast(f"Enviado para lixeira: {enrollment.get('Nome')}")
+                        st.rerun()
+                else:
+                    if cols[4].button(
+                        '♻️',
+                        key=f'rec_{enrollment_id}',
+                        help=f"Restaurar inscrição de {enrollment.get('Nome')}",
+                    ):
+                        recover_enrollment(db, enrollment_id)
+                        st.success(f"Inscrição de {enrollment.get('Nome')} recuperada com sucesso!")
+                        st.rerun()
 
 
 def display_turma_management(db, config):
@@ -428,8 +481,12 @@ def display_settings_management(db, config):
             'Hora de Início', value=current_start_local.time()
         )
         col3, col4 = st.columns(2)
-        end_date = col3.date_input('Data de Término', value=current_end_local.date())
-        end_time = col4.time_input('Hora de Término', value=current_end_local.time())
+        end_date = col3.date_input(
+            'Data de Término', value=current_end_local.date()
+        )
+        end_time = col4.time_input(
+            'Hora de Término', value=current_end_local.time()
+        )
         st.subheader('Regras de Negócio')
         cutoff_score = st.number_input(
             'Nota de Corte',
@@ -444,14 +501,18 @@ def display_settings_management(db, config):
             final_start_naive = datetime.combine(start_date, start_time)
             final_end_naive = datetime.combine(end_date, end_time)
 
-            start_date_utc_iso = pd.to_datetime(final_start_naive) \
-                                     .tz_localize(LOCAL_TZ) \
-                                     .tz_convert(timezone.utc) \
-                                     .isoformat()
-            end_date_utc_iso = pd.to_datetime(final_end_naive) \
-                                   .tz_localize(LOCAL_TZ) \
-                                   .tz_convert(timezone.utc) \
-                                   .isoformat()
+            start_date_utc_iso = (
+                pd.to_datetime(final_start_naive)
+                .tz_localize(LOCAL_TZ)
+                .tz_convert(timezone.utc)
+                .isoformat()
+            )
+            end_date_utc_iso = (
+                pd.to_datetime(final_end_naive)
+                .tz_localize(LOCAL_TZ)
+                .tz_convert(timezone.utc)
+                .isoformat()
+            )
 
             new_config = {
                 'activeSemester': active_semester,
@@ -470,7 +531,10 @@ def display_settings_management(db, config):
 
 def main():
     st.set_page_config(
-        page_title='Admin | Verificalp', page_icon='⚙️', layout='wide'
+        page_title='Admin | Verificalp',
+        page_icon='⚙️',
+        layout='wide',
+        initial_sidebar_state='collapsed',
     )
     load_css()
 
@@ -480,7 +544,22 @@ def main():
         st.error('Falha na conexão com o banco de dados.')
         st.stop()
 
-    bootstrap_initial_user(db, st.secrets.get('bootstrap_user', {}))
+    # Bootstrap: env vars têm prioridade, fallback para st.secrets
+    bootstrap_data = {}
+    env_user = os.getenv('bootstrap_user')
+    env_pass = os.getenv('bootstrap_password')
+    if env_user and env_pass:
+        bootstrap_data = {'username': env_user, 'password': env_pass}
+    else:
+        try:
+            b_user = st.secrets.get('bootstrap_user')
+            b_pass = st.secrets.get('bootstrap_password')
+            if b_user and b_pass:
+                bootstrap_data = {'username': b_user, 'password': b_pass}
+        except Exception:
+            pass
+
+    bootstrap_initial_user(db, bootstrap_data)
 
     if not login_form(db):
         st.stop()
